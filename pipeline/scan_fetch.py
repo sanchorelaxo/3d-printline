@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""
-Fetch scan images from OpenScan Mini via Samba share.
-Copies JPGs from the scanner to the local 1TB drive on the Pi.
+"""Fetch scan images from OpenScan Mini via Samba share.
+Copies JPGs (or zip of JPGs) from the scanner to the local 1TB drive on the Pi.
 """
 import os
 import subprocess
 import sys
+import zipfile
 
 
 def fetch_scan(openscan_ip, project_name, output_dir,
                smb_user="pi", smb_pass="raspberry",
                smb_share="PiShare", scan_path="OpenScan/scans"):
     """
-    Download all images from a specific scan project on OpenScan Mini.
+    Download scan from OpenScan Mini. Handles both zip files and directories.
     
     Args:
         openscan_ip: IP address of OpenScan Mini
-        project_name: Name of the scan project folder
+        project_name: Name of the scan project (zip filename or folder name)
         output_dir: Local directory to save images to
         smb_user: Samba username
         smb_pass: Samba password
@@ -26,14 +26,23 @@ def fetch_scan(openscan_ip, project_name, output_dir,
     Returns:
         List of downloaded file paths
     """
-    local_dir = os.path.join(output_dir, project_name)
+    # Determine a clean project label for local directory
+    label = project_name.replace(".zip", "")
+    local_dir = os.path.join(output_dir, label)
     os.makedirs(local_dir, exist_ok=True)
 
-    remote_path = f"{scan_path}/{project_name}"
-    smb_cmd = f"recurse; prompt; lcd {local_dir}; cd {remote_path}; mget *"
+    is_zip = project_name.endswith(".zip")
+
+    if is_zip:
+        # Download the zip file first, then extract
+        zip_local = os.path.join(output_dir, project_name)
+        smb_cmd = f'prompt; lcd {output_dir}; cd {scan_path}; get "{project_name}"'
+    else:
+        # Try as a directory of images
+        remote_path = f"{scan_path}/{project_name}"
+        smb_cmd = f"recurse; prompt; lcd {local_dir}; cd {remote_path}; mget *"
 
     print(f"Fetching scan '{project_name}' from {openscan_ip}...")
-    print(f"  Remote: //{openscan_ip}/{smb_share}/{remote_path}")
     print(f"  Local:  {local_dir}")
 
     result = subprocess.run(
@@ -47,19 +56,28 @@ def fetch_scan(openscan_ip, project_name, output_dir,
         print(f"smbclient stderr: {result.stderr}", file=sys.stderr)
         raise RuntimeError(f"Failed to fetch scan: smbclient exit code {result.returncode}")
 
-    # List downloaded files
+    # If zip, extract images
+    if is_zip:
+        print(f"Extracting {project_name}...")
+        with zipfile.ZipFile(zip_local, "r") as zf:
+            zf.extractall(local_dir)
+        os.remove(zip_local)
+        print(f"Extracted to {local_dir}")
+
+    # Collect image files (may be in subdirectories after extraction)
     files = []
     allowed_ext = {".jpg", ".jpeg", ".png"}
-    for f in os.listdir(local_dir):
-        if os.path.splitext(f)[1].lower() in allowed_ext:
-            files.append(os.path.join(local_dir, f))
+    for root, dirs, filenames in os.walk(local_dir):
+        for f in filenames:
+            if os.path.splitext(f)[1].lower() in allowed_ext:
+                files.append(os.path.join(root, f))
 
-    print(f"Downloaded {len(files)} images to {local_dir}")
+    print(f"Found {len(files)} images in {local_dir}")
     return files
 
 
 def get_latest_scan(openscan_ip, smb_user="pi", smb_pass="raspberry"):
-    """Get the most recently modified scan directory name."""
+    """Get the most recent scan entry (zip file or directory)."""
     result = subprocess.run(
         ["smbclient", f"//{openscan_ip}/PiShare",
          "-U", f"{smb_user}%{smb_pass}",
@@ -69,17 +87,24 @@ def get_latest_scan(openscan_ip, smb_user="pi", smb_pass="raspberry"):
     if result.returncode != 0:
         return None
 
-    dirs = []
+    entries = []
     for line in result.stdout.strip().split("\n"):
         line = line.strip()
-        if line and "D" in line:
-            parts = line.split()
-            if parts and parts[0] not in (".", ".."):
-                dirs.append(parts[0])
+        if not line:
+            continue
+        parts = line.split()
+        if not parts or parts[0] in (".", ".."):
+            continue
+        name = parts[0]
+        # Accept zip files and directories (but not 'preview')
+        if name.endswith(".zip"):
+            entries.append(name)
+        elif "D" in line and name != "preview":
+            entries.append(name)
 
-    if dirs:
-        # Return last directory (usually most recent)
-        return dirs[-1]
+    if entries:
+        # Return last entry (usually most recent)
+        return entries[-1]
     return None
 
 

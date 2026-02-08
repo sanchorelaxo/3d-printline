@@ -39,7 +39,7 @@ class OpenScanCloudClient:
         if params is None:
             params = {}
         params["token"] = self.token
-        r = requests.get(self.server + endpoint, auth=self.auth, params=params, timeout=30)
+        r = requests.get(self.server + endpoint, auth=self.auth, params=params, timeout=120)
         return r
 
     def get_token_info(self):
@@ -75,7 +75,9 @@ class OpenScanCloudClient:
             raise RuntimeError(f"Upload failed: HTTP {r.status_code}")
 
     def start_project(self, project_name):
-        r = self._get("startProject", {"project": project_name})
+        # startProject can be slow after large uploads
+        params = {"token": self.token, "project": project_name}
+        r = requests.get(self.server + "startProject", auth=self.auth, params=params, timeout=300)
         if r.status_code != 200:
             raise RuntimeError(f"startProject failed: HTTP {r.status_code}")
         print("Processing started on OpenScanCloud")
@@ -172,11 +174,15 @@ def upload_and_process(image_dir, output_dir, env_path, project_name=None, poll_
     if len(images) > limit_photos:
         raise RuntimeError(f"Too many photos: {len(images)} > limit {limit_photos}")
 
-    # Generate project name
-    if not project_name:
-        project_name = f"{int(time.time() * 100)}-OSC.zip"
-    elif not project_name.endswith(".zip"):
-        project_name = f"{project_name}-{int(time.time())}-OSC.zip"
+    # Generate project name — API expects simple alphanumeric-OSC.zip format
+    import re
+    if project_name:
+        # Strip .zip and sanitize: keep only alphanumeric, dash, underscore
+        label = project_name.replace(".zip", "")
+        label = re.sub(r'[^a-zA-Z0-9_-]', '_', label)
+    else:
+        label = "scan"
+    project_name = f"{int(time.time() * 100)}-{label}-OSC.zip"
 
     # Zip and split
     temp_dir = os.path.join(output_dir, "temp")
@@ -245,7 +251,7 @@ def upload_and_process(image_dir, output_dir, env_path, project_name=None, poll_
 
             return result_path
 
-        elif status in ("error", "failed"):
+        elif "failed" in status.lower() or "error" in status.lower():
             raise RuntimeError(f"OpenScanCloud processing failed: {json.dumps(info)}")
 
     raise RuntimeError(f"Timed out after {max_wait}s waiting for processing")
