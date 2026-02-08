@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 """
-Master pipeline orchestrator for the 3d-printline photogrammetry-to-print workflow.
+Pi-side pipeline worker for the 3d-printline photogrammetry workflow.
 Runs on the Raspberry Pi (OpenClaw host).
 
-Steps:
+Steps (Pi-only):
   0. Discover OpenScan Mini on network
   1. Fetch scan images via Samba
   2. Upload to OpenScanCloud, poll, download result
-  3. SCP model to laptop
-  4. Run Blender headless decimation on laptop (Docker)
-  5. Slice STL → 3MF on laptop (OrcaSlicer)
-  6. Upload 3MF + trigger print on Bambu X1-Carbon
-  7. Notify via Telegram (OpenClaw)
+
+The laptop-side orchestrate.py calls this via SSH and handles
+steps 3–6 (transfer, decimate, slice, print) locally.
 """
 import argparse
 import json
@@ -200,143 +198,8 @@ def step_cloud_upload(config, image_dir, project_name):
     return result_path
 
 
-def step_transfer_to_laptop(config, result_path):
-    """Step 3: SCP the model file to the laptop."""
-    laptop_host = config.get("LAPTOP_HOST", "192.168.1.23")
-    laptop_user = config.get("LAPTOP_USER", "rjodouin")
-    laptop_dir = config.get("LAPTOP_PIPELINE_DIR", "/home/rjodouin/3d-pipeline")
-    remote_models_dir = f"{laptop_dir}/models"
-
-    filename = os.path.basename(result_path)
-    remote_path = f"{laptop_user}@{laptop_host}:{remote_models_dir}/{filename}"
-
-    # Ensure remote directory exists
-    subprocess.run(
-        ["ssh", f"{laptop_user}@{laptop_host}", f"mkdir -p {remote_models_dir}"],
-        timeout=10, check=True
-    )
-
-    print(f"SCP: {result_path} → {remote_path}")
-    vlog(f"File size: {os.path.getsize(result_path) / 1e6:.1f} MB")
-    subprocess.run(
-        ["scp", result_path, remote_path],
-        timeout=300, check=True
-    )
-    vlog(f"SCP complete")
-    return f"{remote_models_dir}/{filename}"
-
-
-def step_decimate(config, remote_model_path):
-    """Step 4: Run Blender headless decimation on the laptop via SSH."""
-    laptop_host = config.get("LAPTOP_HOST", "192.168.1.23")
-    laptop_user = config.get("LAPTOP_USER", "rjodouin")
-    laptop_dir = config.get("LAPTOP_PIPELINE_DIR", "/home/rjodouin/3d-pipeline")
-    ratio = config.get("DECIMATE_RATIO", "0.5")
-
-    filename = os.path.basename(remote_model_path)
-    name_base = os.path.splitext(filename)[0]
-    output_stl = f"{laptop_dir}/models/{name_base}_decimated.stl"
-
-    docker_cmd = (
-        f"docker run --rm "
-        f"-v {laptop_dir}:/data "
-        f"nytimes/blender:latest blender -b -noaudio "
-        f"-P /data/scripts/decimate_and_export.py "
-        f"-- --ratio {ratio} "
-        f"--inm /data/models/{filename} "
-        f"--outm /data/models/{name_base}_decimated.stl"
-    )
-
-    vlog(f"Docker cmd: {docker_cmd}")
-    print(f"Running Blender decimation on laptop...")
-    result = subprocess.run(
-        ["ssh", f"{laptop_user}@{laptop_host}", docker_cmd],
-        capture_output=True, text=True, timeout=600
-    )
-
-    if VERBOSE:
-        print(result.stdout)
-        if result.stderr:
-            print(f"  [verbose] stderr: {result.stderr[:500]}")
-    else:
-        # Print just the key lines
-        for line in result.stdout.split("\n"):
-            if any(k in line for k in ["Original", "Final", "Exported", "Done", "ratio"]):
-                print(f"  {line}")
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"Blender decimation failed: exit code {result.returncode}")
-
-    # Also copy to Manyfold library
-    try:
-        cp_cmd = f"cp {laptop_dir}/models/{filename} {laptop_dir}/models/{name_base}_decimated.stl {laptop_dir}/models/ 2>/dev/null || true"
-        subprocess.run(
-            ["ssh", f"{laptop_user}@{laptop_host}", cp_cmd],
-            timeout=30
-        )
-    except Exception:
-        pass
-
-    notify(f"Mesh decimated: {name_base} (ratio={ratio})")
-    return output_stl
-
-
-def step_slice_and_print(config, remote_stl_path):
-    """Step 5+6: Slice and print on the laptop."""
-    laptop_host = config.get("LAPTOP_HOST", "192.168.1.23")
-    laptop_user = config.get("LAPTOP_USER", "rjodouin")
-    laptop_dir = config.get("LAPTOP_PIPELINE_DIR", "/home/rjodouin/3d-pipeline")
-    env_path = config["_env_path"]
-
-    # SCP the .env to laptop temporarily for the slice_and_print script
-    remote_env = f"{laptop_dir}/.env"
-    subprocess.run(
-        ["scp", env_path, f"{laptop_user}@{laptop_host}:{remote_env}"],
-        timeout=30, check=True
-    )
-
-    ssh_cmd = (
-        f"cd {laptop_dir} && "
-        f"python3 {laptop_dir}/scripts/slice_and_print.py "
-        f"--stl {remote_stl_path} "
-        f"--config {remote_env}"
-    )
-
-    vlog(f"SSH cmd: {ssh_cmd}")
-    notify("Starting slice and print...")
-    result = subprocess.run(
-        ["ssh", f"{laptop_user}@{laptop_host}", ssh_cmd],
-        capture_output=True, text=True, timeout=600
-    )
-
-    if VERBOSE:
-        print(result.stdout)
-        if result.stderr:
-            print(f"  [verbose] stderr: {result.stderr[:500]}")
-    else:
-        for line in result.stdout.split("\n"):
-            if any(k in line for k in ["Slic", "Upload", "MQTT", "Print", "PRINTER"]):
-                print(f"  {line}")
-    if result.returncode != 0:
-        print(result.stderr, file=sys.stderr)
-        raise RuntimeError(f"Slice and print failed: exit code {result.returncode}")
-
-    # Parse JSON output from last line
-    for line in reversed(result.stdout.strip().split("\n")):
-        try:
-            print_result = json.loads(line)
-            remaining = print_result.get("remaining_minutes", "unknown")
-            notify(f"✅ Print started! ETA: {remaining} minutes")
-            return print_result
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    notify("Print command sent (could not parse status)")
-    return {"status": "sent"}
-
-
 def run_pipeline(env_path, project_name=None, verbose=False):
-    """Execute the full pipeline."""
+    """Execute Pi-side pipeline steps (discover, fetch, cloud upload)."""
     global VERBOSE, TELEGRAM_TARGET
     VERBOSE = verbose
 
@@ -353,7 +216,7 @@ def run_pipeline(env_path, project_name=None, verbose=False):
     vlog(f"Telegram target: {'(not set)' if not TELEGRAM_TARGET else TELEGRAM_TARGET}")
 
     pipeline_start = time.time()
-    notify(f"Pipeline starting{f' for project: {project_name}' if project_name else ''}...")
+    notify(f"Pi worker starting{f' for project: {project_name}' if project_name else ''}...")
 
     try:
         # Step 0: Discover
@@ -365,26 +228,19 @@ def run_pipeline(env_path, project_name=None, verbose=False):
         # Step 2: Cloud upload + process
         result_path = run_step("Cloud Upload & Process", step_cloud_upload, config, image_dir, project_name)
 
-        # Step 3: Transfer to laptop
-        remote_model = run_step("Transfer to Laptop", step_transfer_to_laptop, config, result_path)
-
-        # Step 4: Decimate
-        remote_stl = run_step("Blender Decimation", step_decimate, config, remote_model)
-
-        # Step 5+6: Slice and print
-        print_result = run_step("Slice & Print", step_slice_and_print, config, remote_stl)
-
         elapsed = time.time() - pipeline_start
-        notify(f"✅ Pipeline complete for '{project_name}' in {elapsed / 60:.1f} minutes!")
+        print(f"\nPi worker done in {elapsed / 60:.1f} minutes")
+        # Machine-readable output line for the laptop orchestrator
+        print(f"RESULT_PATH={result_path}")
 
     except Exception as e:
         elapsed = time.time() - pipeline_start
-        notify(f"Pipeline failed after {elapsed / 60:.1f} minutes: {e}", is_error=True)
+        notify(f"Pi worker failed after {elapsed / 60:.1f} minutes: {e}", is_error=True)
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="3d-printline pipeline orchestrator")
+    parser = argparse.ArgumentParser(description="3d-printline Pi-side worker (steps 0-2)")
     parser.add_argument("--config", required=True, help="Path to .env config file")
     parser.add_argument("--project", help="Scan project name (auto-detect if omitted)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
