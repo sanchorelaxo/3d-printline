@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  manyfold:
+    image: ghcr.io/manyfold3d/manyfold-solo:latest
+    container_name: manyfold
+    ports:
+      - "3214:3214"
+    volumes:
+      - ./models:/libraries
+    environment:
+      - SECRET_KEY_BASE=changeme_generate_a_real_key
+    restart: unless-stopped
+
+volumes:
+  models:
+    driver: local

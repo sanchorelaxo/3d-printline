@@ -39,7 +39,7 @@ Automated photogrammetry-to-print pipeline. Laptop orchestrates; Pi handles scan
 | `scan_watcher.py` | Auto-detect mode — polls for new scans |
 | `.env` | All credentials and config |
 
-### On Laptop (`/home/rjodouin/3d-pipeline/` + git repo)
+### On Laptop (`~/Documents/git/3d-printline/`)
 
 | File | Purpose |
 |------|---------|
@@ -48,7 +48,8 @@ Automated photogrammetry-to-print pipeline. Laptop orchestrates; Pi handles scan
 | `scripts/slice_and_print.py` | OrcaSlicer CLI + FTPS upload + MQTT print trigger |
 | `scripts/bambu_discover.py` | SSDP/port scan to find Bambu printer IP |
 | `docker-compose.yml` | Manyfold container |
-| `OrcaSlicer.AppImage` | Slicer binary (symlinked to `/usr/local/bin/orca-slicer`) |
+| `profiles/x1c_*.json` | Flattened OrcaSlicer profiles for X1C |
+| `models/` | Scan results, decimated STL, sliced 3MF (gitignored large files) |
 
 ### OpenClaw Skill (`~/.openclaw/workspace/skills/3d-printline/`)
 
