@@ -142,14 +142,65 @@ def upload_ftps(printer_ip, access_code, filepath):
     return filename
 
 
+MQTT_SIGNATURE_REQUIRED = 0x20000000
+
+
+def check_mqtt_signature_required(printer_ip, serial, access_code):
+    """Check if printer firmware requires MQTT message signing."""
+    import uuid
+    result = {"required": None}
+
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            client.subscribe(f"device/{serial}/report")
+            client.publish(f"device/{serial}/request",
+                           json.dumps({"pushing": {"sequence_id": "0", "command": "pushall"}}))
+
+    def on_message(client, userdata, msg):
+        try:
+            data = json.loads(msg.payload)
+            if "print" in data and "fun" in data["print"]:
+                fun_int = int(data["print"]["fun"], 16)
+                result["required"] = bool(fun_int & MQTT_SIGNATURE_REQUIRED)
+        except (json.JSONDecodeError, KeyError, ValueError):
+            pass
+
+    client = mqtt.Client(client_id=f"probe-{uuid.uuid4()}",
+                         protocol=mqtt.MQTTv311, clean_session=True)
+    client.username_pw_set("bblp", access_code)
+    client.tls_set(cert_reqs=ssl.CERT_NONE)
+    client.tls_insecure_set(True)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(printer_ip, 8883, 60)
+
+    deadline = time.time() + 5
+    while time.time() < deadline and result["required"] is None:
+        client.loop(timeout=0.5)
+    client.disconnect()
+    return result["required"] or False
+
+
 def trigger_print(printer_ip, serial, access_code, filename):
-    """Send MQTT command to start printing the uploaded file."""
+    """Send MQTT command to start printing the uploaded file.
+
+    If firmware requires MQTT signing (01.11+), returns upload-only status
+    so the user can start the print from the touchscreen.
+    """
+    # Check if firmware blocks unsigned MQTT commands
+    if check_mqtt_signature_required(printer_ip, serial, access_code):
+        print("NOTE: Firmware requires MQTT message signing (01.11+).")
+        print(f"File '{filename}' uploaded to printer SD card (/cache/).")
+        print(">>> Start the print from the printer touchscreen: SD Card → cache → " + filename)
+        return {"status": "UPLOADED", "percent": 0, "remaining": 0,
+                "note": "MQTT signing required; start print from touchscreen"}
+
     topic_request = f"device/{serial}/request"
     topic_report = f"device/{serial}/report"
 
     print_cmd = {
         "print": {
-            "sequence_id": str(int(time.time())),
+            "sequence_id": 0,
             "command": "project_file",
             "param": "Metadata/plate_1.gcode",
             "project_id": "0",
@@ -158,15 +209,14 @@ def trigger_print(printer_ip, serial, access_code, filename):
             "subtask_id": "0",
             "subtask_name": filename.replace(".3mf", ""),
             "file": "",
-            "url": f"ftp:///cache/{filename}",
-            "md5": "",
-            "timelapse": True,
+            "url": f"file:///sdcard/cache/{filename}",
+            "timelapse": False,
             "bed_type": "auto",
-            "bed_levelling": True,
+            "bed_leveling": True,
             "flow_cali": True,
             "vibration_cali": True,
             "layer_inspect": True,
-            "ams_mapping": "",
+            "ams_mapping": [0],
             "use_ams": False
         }
     }
@@ -177,7 +227,6 @@ def trigger_print(printer_ip, serial, access_code, filename):
         if rc == 0:
             print("MQTT connected")
             client.subscribe(topic_report)
-            # Send print command
             payload = json.dumps(print_cmd)
             print(f"Sending print command to {topic_request}")
             client.publish(topic_request, payload)
@@ -210,7 +259,6 @@ def trigger_print(printer_ip, serial, access_code, filename):
     client.connect(printer_ip, 8883, 60)
     client.loop_start()
 
-    # Wait for print to start
     timeout = 30
     start = time.time()
     while time.time() - start < timeout:
