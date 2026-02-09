@@ -170,7 +170,9 @@ def step_pi_worker(config, project_name):
 
 
 def step_pull_from_pi(config, remote_result_path):
-    """SCP the model file from Pi to local laptop."""
+    """SCP the model file from Pi to local laptop. Extracts zip if needed."""
+    import zipfile
+
     local_models = os.path.join(LAPTOP_PIPELINE_DIR, "models")
     os.makedirs(local_models, exist_ok=True)
 
@@ -185,6 +187,20 @@ def step_pull_from_pi(config, remote_result_path):
     )
     size_mb = os.path.getsize(local_path) / 1e6
     vlog(f"Downloaded {size_mb:.1f} MB")
+
+    # If it's a zip, extract and find the OBJ/GLB model inside
+    if filename.endswith(".zip") and zipfile.is_zipfile(local_path):
+        print("Extracting zip...")
+        with zipfile.ZipFile(local_path, 'r') as zf:
+            zf.extractall(local_models)
+            model_exts = ('.obj', '.glb', '.stl', '.ply')
+            for name in zf.namelist():
+                if name.lower().endswith(model_exts):
+                    extracted = os.path.join(local_models, name)
+                    print(f"Extracted model: {name}")
+                    return extracted
+        raise RuntimeError(f"No model file found in {filename}")
+
     return local_path
 
 

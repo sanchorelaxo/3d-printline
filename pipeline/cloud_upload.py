@@ -219,18 +219,32 @@ def upload_and_process(image_dir, output_dir, env_path, project_name=None, poll_
         status = info.get("status", "unknown")
         print(f"  Status: {status} (elapsed: {int(time.time() - start_time)}s)")
 
-        if status == "done":
+        if "done" in status.lower():
             dlink = info.get("dlink", "")
             if not dlink:
                 raise RuntimeError("Processing done but no download link")
 
-            # Download result
-            print(f"Downloading result from: {dlink}")
+            # Extract direct Dropbox URL from the OpenScanCloud redirect link
+            # dlink format: https://www.openscan.eu/osc?id=<dropbox_url>&dl=0
+            # We need the Dropbox URL with dl=1 for direct download
+            direct_url = dlink
+            if "dropbox.com" in dlink:
+                import re
+                match = re.search(r'(https?://[^&]*dropbox\.com/[^&]+)', dlink)
+                if match:
+                    direct_url = match.group(1)
+                    direct_url = re.sub(r'[?&]dl=\d', '', direct_url) + '&dl=1'
+                    if '?' not in direct_url.split('dl=')[0]:
+                        direct_url = direct_url.replace('&dl=1', '?dl=1')
+
+            print(f"Downloading result...")
             os.makedirs(output_dir, exist_ok=True)
 
-            r = requests.get(dlink, timeout=300)
+            r = requests.get(direct_url, timeout=300, allow_redirects=True)
             if r.status_code != 200:
                 raise RuntimeError(f"Download failed: HTTP {r.status_code}")
+            if len(r.content) < 1000 or b'<!doctype' in r.content[:200].lower():
+                raise RuntimeError("Download returned HTML instead of file")
 
             # Determine filename from URL or content-disposition
             ext = ".zip"
