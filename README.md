@@ -8,7 +8,7 @@ Automated photogrammetry-to-print pipeline. Laptop orchestrates; Pi handles scan
 
 | Device | Role | Hostname |
 |--------|------|----------|
-| Laptop | **Orchestrator** — Blender Docker, OrcaSlicer, Bambu print | `sanchopop` |
+| Laptop | **Orchestrator** — Blender Docker, OrcaSlicer, Bambu print | `your-laptop` |
 | Raspberry Pi 5 | OpenClaw host + Pi worker (scan fetch, cloud upload) | `openclaw.local` |
 | OpenScan Mini | 3D scanner (images via Samba) | `openscan.local` |
 | Bambu X1-Carbon | 3D printer (LAN mode, FTPS+MQTT) | dynamic IP |
@@ -28,7 +28,7 @@ Automated photogrammetry-to-print pipeline. Laptop orchestrates; Pi handles scan
 
 ## File Layout
 
-### On Raspberry Pi (`/home/sanchobot/3d-printline/pipeline/`)
+### On Raspberry Pi (`~/3d-printline/pipeline/`)
 
 | File | Purpose |
 |------|---------|
@@ -71,7 +71,7 @@ or with a specific project name:
 ### Auto-detect mode
 
 ```bash
-ssh sanchobot@openclaw.local
+ssh piuser@openclaw.local
 cd ~/3d-printline/pipeline
 python3 scan_watcher.py --config .env
 ```
@@ -103,7 +103,7 @@ All config is in `.env` — edit on the Pi at `~/3d-printline/pipeline/.env`:
 - OrcaSlicer installed on laptop (`/usr/local/bin/orca-slicer`)
 - `smbclient` installed on Pi
 - Bambu X1-Carbon in LAN mode with Micro SD card inserted
-- OpenClaw with Telegram channel configured on Pi (`@sanchobot_admin_bot`)
+- OpenClaw with Telegram channel configured on Pi
 
 ## Dependencies
 
