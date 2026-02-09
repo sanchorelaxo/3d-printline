@@ -26,6 +26,50 @@ Automated photogrammetry-to-print pipeline. Laptop orchestrates; Pi handles scan
 7. **Print** (Laptop) — upload 3MF via FTPS, trigger print via MQTT on Bambu X1-Carbon
 8. **Notify** — Telegram via Pi's OpenClaw at each step
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant Laptop
+    participant Pi
+    participant Scanner as OpenScan Mini
+    participant Cloud as OpenScanCloud
+    participant Printer as Bambu X1C
+
+    User->>Laptop: orchestrate.py --config .env
+    Laptop->>Pi: SSH: run_pipeline.py
+
+    rect rgb(40, 40, 60)
+    Note over Pi,Scanner: Pi-side (steps 0–2)
+    Pi->>Scanner: Samba: fetch scan images
+    Scanner-->>Pi: JPGs
+    Pi->>Cloud: HTTP: upload images
+    loop Poll until done
+        Pi->>Cloud: GET status
+        Cloud-->>Pi: processing...
+    end
+    Cloud-->>Pi: OBJ/GLB model
+    end
+    Pi-->>Laptop: SSH returns result path
+
+    rect rgb(40, 60, 40)
+    Note over Laptop: Laptop-side (steps 3–7)
+    Laptop->>Pi: SCP: pull model
+    Pi-->>Laptop: model file
+    Laptop->>Laptop: Blender Docker: decimate → STL
+    Laptop->>Laptop: OrcaSlicer CLI: slice → 3MF
+    Laptop->>Printer: FTPS: upload 3MF
+    alt MQTT signing not required
+        Laptop->>Printer: MQTT: start print
+    else MQTT signing required (fw 01.11+)
+        Laptop->>Laptop: Launch Bambu Studio
+        User->>Printer: Click Print in Bambu Studio
+    end
+    end
+
+    Laptop->>Pi: SSH: openclaw notify
+    Pi->>User: Telegram notification
+```
+
 ## File Layout
 
 ### On Raspberry Pi (`~/3d-printline/pipeline/`)

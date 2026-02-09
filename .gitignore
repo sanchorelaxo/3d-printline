@@ -1,9 +1,4 @@
 .orchestrate.pid
-models/*.zip
-models/*.obj
-models/*.mtl
-models/*.jpg
-models/*.ply
-models/*.glb
+models/*
 __pycache__/
 *.pyc
