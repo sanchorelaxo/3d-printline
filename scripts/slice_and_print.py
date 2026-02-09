@@ -9,8 +9,10 @@ Usage:
 """
 import argparse
 import ftplib
+import glob
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -142,6 +144,20 @@ def upload_ftps(printer_ip, access_code, filepath):
     return filename
 
 
+def find_bambu_studio(studio_dir):
+    """Find the latest Bambu Studio AppImage by PR number."""
+    if not studio_dir or not os.path.isdir(studio_dir):
+        return None
+    pattern = os.path.join(studio_dir, "Bambu_Studio_ubuntu-24.04_PR-*.AppImage")
+    candidates = glob.glob(pattern)
+    if not candidates:
+        return None
+    def pr_number(path):
+        m = re.search(r'PR-(\d+)', path)
+        return int(m.group(1)) if m else 0
+    return max(candidates, key=pr_number)
+
+
 MQTT_SIGNATURE_REQUIRED = 0x20000000
 
 
@@ -191,9 +207,8 @@ def trigger_print(printer_ip, serial, access_code, filename):
     if check_mqtt_signature_required(printer_ip, serial, access_code):
         print("NOTE: Firmware requires MQTT message signing (01.11+).")
         print(f"File '{filename}' uploaded to printer SD card (/cache/).")
-        print(">>> Start the print from the printer touchscreen: SD Card → cache → " + filename)
         return {"status": "UPLOADED", "percent": 0, "remaining": 0,
-                "note": "MQTT signing required; start print from touchscreen"}
+                "note": "MQTT signing required; opening Bambu Studio"}
 
     topic_request = f"device/{serial}/request"
     topic_report = f"device/{serial}/report"
@@ -335,6 +350,14 @@ def main():
     # Upload and print
     filename = upload_ftps(printer_ip, access_code, threemf_path)
     result = trigger_print(printer_ip, serial, access_code, filename)
+
+    if result.get("status") == "UPLOADED":
+        bambu = find_bambu_studio(config.get("BAMBU_STUDIO_DIR", ""))
+        if bambu:
+            print(f"Launching Bambu Studio: {os.path.basename(bambu)}")
+            subprocess.Popen([bambu, threemf_path])
+        else:
+            print("Bambu Studio AppImage not found. Open manually: " + threemf_path)
 
     # Output result for pipeline consumption
     print(json.dumps({
